@@ -1,19 +1,24 @@
-﻿using System.Linq;
+﻿using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
 using Xunit;
 
-namespace ThreadSafeContainers.Tests {
-    public sealed class ThreadSafeQueueTests {
+namespace ThreadSafeContainers.Tests
+{
+    public sealed class ThreadSafeQueueTests
+    {
         [Fact]
-        public void ShouldCreateNewInstance() {
+        public void ShouldCreateNewInstance()
+        {
             var queue = new ThreadSafeQueue<string>();
             Assert.NotNull(queue);
         }
 
         [Fact]
-        public void ShouldDefaultToEmpty() {
+        public void ShouldDefaultToEmpty()
+        {
             var queue = new ThreadSafeQueue<int>();
 
             Assert.Equal(0, queue.Count);
@@ -21,7 +26,8 @@ namespace ThreadSafeContainers.Tests {
         }
 
         [Fact]
-        public void ShouldUpdateCountWhenAddingToQueue() {
+        public void ShouldUpdateCountWhenAddingToQueue()
+        {
             var queue = new ThreadSafeQueue<long>();
 
             queue.Enqueue(5);
@@ -31,8 +37,9 @@ namespace ThreadSafeContainers.Tests {
         }
 
         [Fact]
-        public void ShouldDequeueAllAfterAdded() {
-            var expected = new [] {
+        public void ShouldDequeueAllAfterAdded()
+        {
+            var expected = new[] {
                 "hello",
                 "world"
             };
@@ -48,15 +55,16 @@ namespace ThreadSafeContainers.Tests {
         }
 
         [Fact]
-        public void ShouldEnqueueColletionOfItem() {
-            var expected = new [] {
+        public void ShouldEnqueueColletionOfItems()
+        {
+            var expected = new[] {
                 "hello",
                 "world"
             };
 
             var queue = new ThreadSafeQueue<string>();
 
-            queue.EnqueueAll(expected);
+            queue.Enqueue(expected);
 
             var actual = queue.DequeueAll();
 
@@ -64,42 +72,162 @@ namespace ThreadSafeContainers.Tests {
         }
 
         [Fact]
-        public void test1() {
-            this.ShouldBlockThreadUntilAnItemBecamesAvailable().Wait();
-        }
-
-        public async Task ShouldBlockThreadUntilAnItemBecamesAvailable() {
-            var expected = new [] {
+        public async Task ShouldBlockDequeUntilTimoutOccurs()
+        {
+            var dummy = new[] {
                 "hello",
                 "world",
                 "TripStack"
             };
 
-            var expectedCount = 9;
+            string result = string.Empty;
+            string result2 = string.Empty;
+
+            string expected = dummy[0];
+
+            int timeout = 500;
+            int biggerTimeout = 1000;
+
+            int waitTime = 800;
+
+            List<string> resultSet = new List<string>();
 
             var queue = new ThreadSafeQueue<string>();
 
-            var result = await Task.Run(() => {
-                var dq = queue.DequeueAll();
-                return dq;
+
+            var loadThread = new Thread(() =>
+            {
+                queue.Enqueue(dummy);
             });
 
-            var loadTasks = Task.Run(() => {
-                Parallel.Invoke(
-                    () => { queue.EnqueueAll(expected); },
-                    () => { queue.EnqueueAll(expected); },
-                    () => { queue.EnqueueAll(expected); }
-                );
+            var smallTimeoutThread = new Thread(() =>
+            {
+                result = queue.Dequeue(timeout);
             });
 
-            await loadTasks;
+            var bigTimeoutThread = new Thread(() =>
+            {
+                result2 = queue.Dequeue(biggerTimeout);
+            });
 
-            Assert.Equal(expectedCount, result.Count());
+            // should try to consume the empty queue, block thread for short time
+            smallTimeoutThread.Start();
+            
+            // testing the timeout 
+            await Task.Delay(waitTime);
 
+            // load data into the queue
+            loadThread.Start();
+            
+            // start to consume a queue with data, this thread has a 1sec timeout
+            bigTimeoutThread.Start();
+
+            // wait for this thread to finish, in order to test properly
+            bigTimeoutThread.Join();
+
+            Assert.Equal(expected, result2);
+            Assert.Null(result);
         }
 
         [Fact]
-        public async Task ShouldDequeueInstantlyIfValueExistsInQueue() {
+        public async Task ShouldDoNotBlockWhenDequeueingNonEmptyQueue()
+        {
+            var data = new[] { "value1", "value2" };
+            string expected = data[0];
+            var queue = new ThreadSafeQueue<string>();
+
+            queue.Enqueue(data);
+
+            var result = await queue.DequeueAsync();
+
+            Assert.NotNull(result);
+            Assert.Equal(expected, result);
+        }
+
+        [Fact]
+        public async Task ShouldDoNotBlockWhenDequeueingAnEmptyQueue()
+        {
+            var queue = new ThreadSafeQueue<string>();
+
+            var result = await queue.DequeueAsync();
+
+            Assert.Null(result);
+        }
+
+        [Fact]
+        public void ShouldBlockThreadUntilAnItemBecamesAvailableThenDequeueIt()
+        {
+            var dummy = new[] {
+                "hello",
+                "world",
+                "TripStack"
+            };
+
+            List<string> resultSet = new List<string>();
+
+            var queue = new ThreadSafeQueue<string>();
+
+            var resultThread1 = new Thread(() =>
+            {
+                var result = queue.DequeueWithWait();
+                resultSet.Add(result);
+            });
+
+            var resultThread2 = new Thread(() =>
+            {
+                var result = queue.DequeueWithWait();
+                resultSet.Add(result);
+            });
+
+            var resultThread3 = new Thread(() =>
+            {
+                var result = queue.DequeueWithWait();
+                resultSet.Add(result);
+            });
+
+            // start dequeing  data from the empty queue
+            resultThread1.Name = "DQ1";
+            resultThread1.Start();
+
+            resultThread2.Name = "DQ2";
+            resultThread2.Start();
+
+            resultThread3.Name = "DQ3";
+            resultThread3.Start();
+
+            var loadThreads = LoadThreads(dummy, 5, queue);
+
+            // start threads that load data into the queue's
+            foreach (var t in loadThreads)
+            {
+                t.Start();
+            }
+
+            // block main thread until the consuming threads finish their work
+            resultThread1.Join();
+            resultThread2.Join();
+            resultThread3.Join();
+
+            Assert.True(resultSet.Count == 3);
+        }
+
+        private Thread[] LoadThreads(string[] dummyData, int totalThreads, ThreadSafeQueue<string> queue)
+        {
+            Thread[] loadThreads = new Thread[totalThreads];
+
+            for (int i = 0; i < totalThreads; i++)
+            {
+                loadThreads[i] = new Thread(() =>
+                {
+                    queue.Enqueue(dummyData);
+                });
+            }
+            return loadThreads;
+        }
+
+        [Fact]
+        public async Task ShouldDequeueInstantlyIfValueExistsInQueue()
+        {
             var queue = new ThreadSafeQueue<string>();
 
             queue.Enqueue("hello");
